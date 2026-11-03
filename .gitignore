@@ -1,0 +1,5 @@
+# 公開しないもの
+*仕様書*.md
+release-check/
+.env
+.env.*
