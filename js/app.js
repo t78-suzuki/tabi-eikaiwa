@@ -317,11 +317,11 @@ function result(id) {
   <section class="result">
     ${sc ? `
     <div class="score-card">
-      <div class="big"><strong>${s.testAvg ?? sc.total}</strong><span>${s.testAvg != null ? '3部の平均点' : '/ 100点'}</span></div>
+      <div class="big"><strong>${Number(s.testAvg ?? sc.total)}</strong><span>${s.testAvg != null ? '3部の平均点' : '/ 100点'}</span></div>
       <span class="verdict ${s.goalAchieved || tr?.passed ? 'ok' : 'ng'}">${verdict}<small>${fmtDate(s.at)}</small></span>
     </div>
-    ${tr ? `<p class="notice ${tr.passed ? 'ok' : ''}">${tr.passed ? (tr.newLevel ? `Lv${tr.newLevel} が解放されました。` : s.lv === 10 ? '卒業試験に合格しました。一人旅に出られる力がついています。' : '合格しました。') : `合格まであと少しです。弱かった観点は「${esc(weak)}」。24時間後に再受験できます。`}</p>` : ''}
-    <ul class="axes">${axes.map(([n, v, m]) => `<li><span>${n}</span><meter min="0" max="${m}" value="${v}"></meter><b>${v}<small>/${m}</small></b></li>`).join('')}</ul>
+    ${tr ? `<p class="notice ${tr.passed ? 'ok' : ''}">${tr.passed ? (tr.newLevel ? `Lv${Number(tr.newLevel)} が解放されました。` : s.lv === 10 ? '卒業試験に合格しました。一人旅に出られる力がついています。' : '合格しました。') : `合格まであと少しです。弱かった観点は「${esc(weak)}」。24時間後に再受験できます。`}</p>` : ''}
+    <ul class="axes">${axes.map(([n, v, m]) => `<li><span>${n}</span><meter min="0" max="${m}" value="${Number(v)}"></meter><b>${Number(v)}<small>/${m}</small></b></li>`).join('')}</ul>
     <p class="summary">${esc(s.summaryJa)}</p>
     <p class="next"><span>次回の課題</span>${esc(s.nextTaskJa)}</p>
     <p class="fine">点数と言い直し例はAIによる判定で、目安です。音声認識の聞き違いが含まれることもあります。</p>
