@@ -43,7 +43,7 @@ export const fmtDate = (t) => {
 
 export const head = (title, back = '#/') => `
   <header class="bar">
-    <a class="icon-btn" href="${back}" aria-label="戻る">${icon('back')}</a>
+    <a class="icon-btn" href="${esc(back)}" aria-label="戻る">${icon('back')}</a>
     <h1>${esc(title)}</h1>
     <span class="icon-btn"></span>
   </header>`;

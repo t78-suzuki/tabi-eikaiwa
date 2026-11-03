@@ -305,13 +305,15 @@ function result(id) {
   if (!s) { location.replace('#/'); return; }
   const scene = s.sceneId === 'full-trip' ? fullTripScene() : findScene(s.sceneId);
   const q = query();
+  // URL から来る値は既知の場面だけ通す
+  const next = q.next && findScene(q.next) ? q.next : '';
   const sc = s.scores;
   const axes = sc ? [['目的達成', sc.goal, 30], ['伝わりやすさ', sc.clarity, 20], ['文法・語彙', sc.grammar, 20], ['流暢さ', sc.fluency, 15], ['自立度', sc.independence, 15]] : [];
   const tr = s.testResult;
   const verdict = s.isTest && tr ? (tr.passed ? '合格' : '不合格') : s.goalAchieved ? '達成' : 'もう一歩';
   const weak = sc ? axes.map(([n, v, m]) => [n, v / m]).sort((a, b) => a[1] - b[1])[0][0] : '';
   app.innerHTML = `
-  ${head('振り返り', `#/level/${s.lv}`)}
+  ${head('振り返り', `#/level/${Number(s.lv) || 1}`)}
   <section class="result">
     ${sc ? `
     <div class="score-card">
@@ -344,11 +346,11 @@ function result(id) {
     }).join('')}</ul>` : ''}
 
     <details class="transcript" ${sc ? '' : 'open'}><summary>文字起こし全文</summary>
-      ${s.transcript.length ? s.transcript.map((t) => `<p class="${t.who}"><b>${t.who === 'ai' ? esc(scene?.aiName || 'AI') : 'あなた'}</b>${esc(t.text)}</p>`).join('') : '<p>会話の記録がありません。</p>'}
+      ${s.transcript.length ? s.transcript.map((t) => `<p class="${t.who === 'ai' ? 'ai' : 'me'}"><b>${t.who === 'ai' ? esc(scene?.aiName || 'AI') : 'あなた'}</b>${esc(t.text)}</p>`).join('') : '<p>会話の記録がありません。</p>'}
     </details>
-    ${q.next ? `<a class="wide btn" href="#/prep/${q.next}?test=1">次の部へ進む</a>` : `
+    ${next ? `<a class="wide btn" href="#/prep/${esc(next)}?test=1">次の部へ進む</a>` : `
     <div class="actions">
-      <a class="btn" href="#/prep/${s.sceneId}">もう一度</a>
+      <a class="btn" href="#/prep/${esc(s.sceneId)}">もう一度</a>
       <a class="btn outline" href="#/">ホームへ</a>
     </div>`}
   </section>`;
@@ -418,7 +420,7 @@ function review() {
     <p class="lead">指摘された言い方を 1・3・7・14日後にくり返します。会話の中でも自然に出題されます。</p>
     <h2>今日の復習カード <small>${due.length}枚</small></h2>
     ${due.length ? `<ul class="fixes">${due.map((c) => `
-      <li data-id="${c.id}">
+      <li data-id="${esc(c.id)}">
         <p class="you">${esc(c.you)}</p>
         <p class="better">${esc(c.better)}</p>
         <p class="note">${esc(c.noteJa)}</p>
@@ -580,9 +582,9 @@ function settings() {
       <h2>利用枠</h2>
       <label>モード<select name="mode">${opt([['free', '無料枠モード'], ['paid', '有料枠モード（課金を有効にした方）']], s.mode)}</select></label>
       ${s.mode === 'paid' ? `
-        <div class="meter-box"><span>今月の会話 ${min} / ${s.monthlyCapMin} 分</span><meter min="0" max="${s.monthlyCapMin}" value="${min}"></meter>
+        <div class="meter-box"><span>今月の会話 ${min} / ${Number(s.monthlyCapMin)} 分</span><meter min="0" max="${Number(s.monthlyCapMin)}" value="${min}"></meter>
         <span class="fine">概算 ${Math.round(min * 1.8)}〜${Math.round(min * 5.3)} 円（実際の請求は Google AI Studio で確認してください）</span></div>
-        <label>月の上限（分）<input name="monthlyCapMin" type="number" min="10" step="10" value="${s.monthlyCapMin}"></label>
+        <label>月の上限（分）<input name="monthlyCapMin" type="number" min="10" step="10" value="${Number(s.monthlyCapMin)}"></label>
         <label class="check"><input type="checkbox" name="detailedScoring" ${s.detailedScoring ? 'checked' : ''}><span>詳しい採点（上位モデル・発音のヒントつき）</span></label>`
         : `<button type="button" class="outline wide" data-act="upgrade">有料枠でできること</button>`}
 

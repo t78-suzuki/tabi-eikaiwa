@@ -47,12 +47,35 @@ export async function wipeAll() {
   for (const store of ['sessions', 'cards', 'kv']) await tx(store, 'readwrite', (s) => s.clear());
 }
 
+// 読み込むファイルは外から来たものとして形を確かめる（壊れた・細工されたファイルを入れない）
+const ID_RE = /^[\w-]{1,64}$/;
+const num = (v) => Number.isFinite(Number(v));
+const str = (v) => v == null || typeof v === 'string';
+
+function validSession(s) {
+  return s && ID_RE.test(s.id) && ID_RE.test(s.sceneId) && num(s.lv) && num(s.at)
+    && Array.isArray(s.transcript) && s.transcript.every((t) => (t.who === 'ai' || t.who === 'me') && str(t.text))
+    && (s.scores == null || ['goal', 'clarity', 'grammar', 'fluency', 'independence', 'total'].every((k) => num(s.scores[k])));
+}
+
+function validCard(c) {
+  return c && ID_RE.test(c.id) && str(c.you) && str(c.better) && str(c.noteJa) && num(c.stage) && num(c.due);
+}
+
 export async function importAll(data) {
   if (data?.app !== 'eikaiwa-trip') throw new Error('このアプリの書き出しファイルではありません。');
+  const sessions = data.sessions || [];
+  const cards = data.cards || [];
+  if (!Array.isArray(sessions) || !sessions.every(validSession) || !Array.isArray(cards) || !cards.every(validCard)) {
+    throw new Error('ファイルの中身が正しくないため、読み込みませんでした。');
+  }
+  const { settings, progress } = data.kv || {};
+  if (settings && !num(settings.monthlyCapMin)) throw new Error('ファイルの中身が正しくないため、読み込みませんでした。');
   await wipeAll();
-  for (const [k, v] of Object.entries(data.kv || {})) if (v) await kvSet(k, v);
-  for (const s of data.sessions || []) await put('sessions', s);
-  for (const c of data.cards || []) await put('cards', c);
+  if (settings) await kvSet('settings', settings);
+  if (progress) await kvSet('progress', progress);
+  for (const s of sessions) await put('sessions', s);
+  for (const c of cards) await put('cards', c);
 }
 
 const KEY = 'eikaiwa.apiKey';
