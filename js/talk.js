@@ -22,6 +22,50 @@ export function abortTalk() {
   active = null;
 }
 
+const micErrorText = (e) => (e.name === 'NotAllowedError' ? 'マイクの使用が許可されていません。設定 → Safari → マイク で許可してください。'
+  : e.name === 'NotFoundError' ? 'マイクが見つかりません。' : '音声の準備に失敗しました。ブラウザを最新にしてお試しください。');
+
+// 準備画面のマイクテスト：声を出してバーが動くか確かめる。box に .level と .diag を描く
+// 呼ぶのはタップの処理の中から（await の前に unlock するため）
+// もう一度押すか15秒たつと止まる
+let testStop = null;
+export async function micTest(box) {
+  if (testStop) { testStop(); return; }
+  engine.unlock();
+  const btn = box.querySelector('[data-act=mic-test] span');
+  const bar = box.querySelector('.meter i');
+  const diag = box.querySelector('.diag');
+  try {
+    await engine.init();
+  } catch (e) {
+    diag.textContent = micErrorText(e);
+    return;
+  }
+  let peak = 0;
+  await engine.startMic(() => {}, (lv) => {
+    peak = Math.max(peak, lv);
+    bar.style.width = `${Math.min(100, lv * 600)}%`;
+  });
+  btn.textContent = 'テストを止める';
+  const show = () => {
+    diag.textContent = `${peak > 0.01 ? '声が届いています。マイクは使えます。' : '声を出してみてください。バーが動かないときは、この下の文字を教えてください。'}\n${engine.diag()}`;
+  };
+  const timer = setInterval(() => (box.isConnected ? show() : testStop?.()), 500);
+  const limit = setTimeout(() => testStop?.(), 15000);
+  testStop = () => {
+    clearInterval(timer);
+    clearTimeout(limit);
+    testStop = null;
+    // テストが終わったらマイクを閉じる（iPhone のマイク使用中の表示を消す）
+    if (!active) engine.stopMic();
+    if (!box.isConnected) return;
+    bar.style.width = '0';
+    btn.textContent = 'もう一度テストする';
+    show();
+    diag.textContent = diag.textContent.replace('声を出してみてください。', 'テストを終えました。');
+  };
+}
+
 // ctx: { scene, stage, isTest, retention, noSupport, limitMin, onDone(sessionId) }
 export async function startTalk(root, ctx) {
   const s = state.settings;
@@ -29,11 +73,12 @@ export async function startTalk(root, ctx) {
     toast(`今月の上限 ${s.monthlyCapMin} 分に達しました。設定で上限を変更できます。`);
     return false;
   }
+  // iPhone では、タップの直後（await の前）に音声を有効にしないと音が出ない・録れない
+  engine.unlock();
   try {
     await engine.init();
   } catch (e) {
-    toast(e.name === 'NotAllowedError' ? 'マイクの使用が許可されていません。設定 → Safari → マイク で許可してください。'
-      : e.name === 'NotFoundError' ? 'マイクが見つかりません。' : '音声の準備に失敗しました。ブラウザを最新にしてお試しください。');
+    toast(micErrorText(e));
     return false;
   }
   active = new Talk(root, ctx);
@@ -167,7 +212,7 @@ class Talk {
 
   async loadHelp() {
     const seq = ++this.helpSeq;
-    const box = this.root.querySelector('.help');
+    const box = this.helpBody();
     if (box) box.innerHTML = '<p class="help-wait">返答の候補を準備中…</p>';
     try {
       const data = await generateJSON(apiKey.get(), state.settings.textModel, helpPrompt({ scene: this.scene, transcript: this.transcript }), HELP_SCHEMA);
@@ -185,24 +230,22 @@ class Talk {
   }
 
   // ---- 操作 ----
-  // 押して話すモード：タップで話し始め、もう一度タップで送る。長押しして離しても送れる
-  async micDown() {
+  // 押して話すモード：「話す」で録音を始め、「送る」で送る
+  // 自動判定モード：「話す」ボタンはマイクのオン・オフ
+  talkPressed() {
     if (this.ended) return;
-    engine.resume();
+    engine.unlock(); // タップのたびに音声を再開（iPhone で止まっていた場合のため）
     if (!this.pushToTalk) {
       this.micOn = !this.micOn;
       engine.setMicEnabled(this.micOn);
       this.setStatus(this.micOn ? 'wait' : 'muted');
       return;
     }
-    if (this.pressing) { this.downAt = 0; return this.stopTalking(); }
-    this.downAt = performance.now();
-    this.startTalking();
+    if (!this.pressing) this.startTalking();
   }
 
-  micUp() {
-    // 0.4秒以上の長押しなら、離したときに送る。短いタップなら話し続ける
-    if (this.pushToTalk && this.pressing && this.downAt && performance.now() - this.downAt > 400) this.stopTalking();
+  sendPressed() {
+    if (this.pushToTalk && this.pressing) this.stopTalking();
   }
 
   startTalking() {
@@ -234,17 +277,18 @@ class Talk {
     this.replyWait = setTimeout(() => {
       if (this.ended || this.pressing || this.mode !== 'think') return;
       this.setStatus('wait');
-      this.banner('うまく聞き取れなかったようです。もう一度マイクをタップして話してください。');
+      this.banner('うまく聞き取れなかったようです。もう一度「話す」を押して話してください。');
     }, 8000);
   }
 
-  // 話している間にマイクの音が届いていなければ知らせる
+  // 話している間にマイクの音が届いていなければ、診断つきで知らせる
   watchMic() {
     this.micPeak = 0;
     clearTimeout(this.micWatch);
     this.micWatch = setTimeout(() => {
       if (this.pressing && this.micPeak < 0.003) {
-        this.banner('マイクの音が届いていません。マイクの許可（設定 → Safari → マイク）と、消音・イヤホンの接続を確認してください。');
+        this.banner(`マイクの音が届いていません。設定 → Safari → マイク を確認してください。
+${engine.diag()}`);
       }
     }, 2000);
   }
@@ -297,6 +341,7 @@ class Talk {
     if (b) { b.textContent = text; b.hidden = !text; }
   }
 
+
   async fatal(err) {
     if (this.ended) return;
     if (err?.isQuota) {
@@ -346,40 +391,46 @@ class Talk {
   // ---- 描画 ----
   render() {
     const sc = this.scene;
-    const phrases = (sc.phrases || []).map(([en, ja]) => `<button class="chip" data-say="${esc(en)}">${esc(en)}<small>${esc(ja)}</small></button>`).join('');
+    const ptt = this.pushToTalk;
     this.root.innerHTML = `
     <section class="talk stage-${this.stage}">
       <header class="talk-head">
-        <button class="ghost" data-act="end">終える</button>
+        <button class="ghost" data-act="end">会話を終える</button>
         <div class="who"><strong>${esc(sc.aiName)}</strong><span>${esc(sc.roleJa)}</span></div>
         <span class="timer" aria-label="残り時間"></span>
       </header>
       <p class="goal"><span>目的</span>${esc(sc.goalJa)}</p>
-      <p class="banner" hidden></p>
+      <p class="banner" hidden role="alert"></p>
       <div class="log" aria-live="polite"></div>
-      ${this.showHelp ? `<div class="help"><p class="help-wait">AIの最初のひと言を待っています…</p></div>` : ''}
-      ${this.canHint ? `<div class="help" hidden></div>` : ''}
-      ${this.showHelp && phrases ? `<details class="phrases"><summary>キーフレーズ</summary><div class="chips">${phrases}</div></details>` : ''}
-      <footer class="controls">
-        ${this.stage !== 'free' && !this.isTest ? `<button class="side" data-act="slower">Slower,<br>please</button>` : '<span></span>'}
-        <div class="mic-wrap">
-          <canvas class="wave" width="240" height="240" aria-hidden="true"></canvas>
-          <button class="mic" data-act="mic" aria-label="${this.pushToTalk ? 'タップで話し始め、もう一度タップで送る' : 'マイクのオンオフ'}">${icon('mic')}</button>
-        </div>
-        ${this.canHint ? `<button class="side" data-act="hint">ヒント</button>` : '<span></span>'}
-      </footer>
+      ${this.showHelp || this.canHint ? `
+      <details class="help" ${this.showHelp ? 'open' : 'hidden'}>
+        <summary>返答の候補</summary>
+        <div class="help-body"><p class="help-wait">AIの最初のひと言を待っています…</p></div>
+      </details>` : ''}
+      <div class="meter" aria-hidden="true"><i></i></div>
       <p class="status" aria-live="polite"></p>
+      <footer class="controls ${ptt ? 'ptt' : 'vad'}">
+        <div class="aux">
+          ${this.stage !== 'free' && !this.isTest ? '<button class="side" data-act="slower">Slower, please</button>' : ''}
+          ${this.canHint ? '<button class="side" data-act="hint">ヒント</button>' : ''}
+        </div>
+        <button class="talk-btn" data-act="talk">${icon('mic')}<span>${ptt ? '話す' : 'マイク'}</span></button>
+        ${ptt ? `<button class="send-btn" data-act="send" disabled>${icon('send')}<span>送る</span></button>` : '<span></span>'}
+      </footer>
       <div class="overlay" hidden><div class="stamp-spin"></div><p>振り返りを作っています…</p></div>
     </section>`;
     const r = this.root;
-    r.querySelector('[data-act=end]').onclick = () => this.finish();
+    this.followLog();
+    const ban = r.querySelector('.banner');
+    ban.addEventListener('click', () => { ban.hidden = true; });
+    // 押し間違いで終わらないよう確認する
+    r.querySelector('[data-act=end]').onclick = () => {
+      if (confirm('会話を終えて、振り返りに進みますか？')) this.finish();
+    };
     r.querySelector('[data-act=slower]')?.addEventListener('click', () => this.slower());
     r.querySelector('[data-act=hint]')?.addEventListener('click', () => this.hint());
-    const mic = r.querySelector('[data-act=mic]');
-    // iPhone では長押しで pointercancel が来ることがあるので、cancel では送らない
-    mic.addEventListener('pointerdown', (e) => { e.preventDefault(); this.micDown(); });
-    mic.addEventListener('pointerup', () => this.micUp());
-    mic.addEventListener('contextmenu', (e) => e.preventDefault());
+    r.querySelector('[data-act=talk]').addEventListener('click', () => this.talkPressed());
+    r.querySelector('[data-act=send]')?.addEventListener('click', () => this.sendPressed());
     r.querySelector('.talk').addEventListener('click', (e) => {
       const say = e.target.closest('[data-say]');
       if (say) speak(say.dataset.say, { slow: this.scene.lv <= 3 });
@@ -391,17 +442,48 @@ class Talk {
 
   setStatus(kind) {
     this.mode = kind;
+    const ptt = this.pushToTalk;
     const t = {
       connect: '接続しています…',
-      ai: `${this.scene.aiName} が話しています`,
-      wait: this.pushToTalk ? 'マイクをタップして話し、話し終わったらもう一度タップ' : '話しかけてください（話し終わると自動で送ります）',
-      me: '聞いています… 話し終わったらタップで送ります',
-      think: '考えています…',
-      muted: 'マイクはオフです。タップでオン',
+      ai: `${this.scene.aiName} が話しています（「話す」で割り込めます）`,
+      wait: ptt ? '「話す」を押して英語で話し、話し終わったら「送る」' : '話しかけてください（話し終わると自動で送ります）',
+      me: '録音中… 話し終わったら「送る」を押してください',
+      think: '返事を待っています…',
+      muted: 'マイクはオフです。「マイク」でオン',
     }[kind];
     const el = this.root.querySelector('.status');
     if (el) el.textContent = t;
-    this.root.querySelector('.mic')?.classList.toggle('on', kind === 'me' || (!this.pushToTalk && this.micOn));
+    const talk = this.root.querySelector('[data-act=talk]');
+    const send = this.root.querySelector('[data-act=send]');
+    if (ptt) {
+      talk?.classList.toggle('on', kind === 'me');
+      if (talk) talk.disabled = kind === 'me' || kind === 'connect';
+      if (send) send.disabled = kind !== 'me';
+      send?.classList.toggle('ready', kind === 'me');
+    } else {
+      talk?.classList.toggle('on', this.micOn && kind !== 'connect');
+      if (talk) talk.querySelector('span').textContent = this.micOn ? 'マイク オン' : 'マイク オフ';
+    }
+  }
+
+  // 会話ログは、自分で上にスクロールして読んでいる間だけ止め、それ以外は常に最新の発言を見せる
+  // 返答候補の欄の高さが変わってログが縮んだときも、最新に合わせ直す
+  followLog() {
+    const log = this.root.querySelector('.log');
+    this.stick = true;
+    log.addEventListener('scroll', () => {
+      if (this.autoScrolling) return;
+      this.stick = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+    }, { passive: true });
+    new ResizeObserver(() => this.toBottom()).observe(log);
+  }
+
+  toBottom() {
+    const log = this.root.querySelector('.log');
+    if (!log || !this.stick) return;
+    this.autoScrolling = true;
+    log.scrollTop = log.scrollHeight;
+    requestAnimationFrame(() => { this.autoScrolling = false; });
   }
 
   renderLog() {
@@ -412,49 +494,45 @@ class Talk {
       <div class="bubble ${t.who}${t.retracted ? ' retracted' : ''}">
         <p>${esc(t.text)}</p>
         ${t.who === 'ai' && t.ja && this.showHelp ? `<p class="ja">${esc(t.ja)}</p>` : ''}
-        ${t.who === 'me' && i === lastMe && !t.retracted ? '<button class="mini" data-act="retry">もう一度</button>' : ''}
+        ${t.who === 'me' && i === lastMe && !t.retracted ? '<button class="mini" data-act="retry">言い直す</button>' : ''}
       </div>`).join('');
-    log.scrollTop = log.scrollHeight;
+    this.toBottom();
+  }
+
+  helpBody() {
+    return this.root.querySelector('.help .help-body');
   }
 
   renderHelp() {
     const box = this.root.querySelector('.help');
-    if (!box || !this.helpData) return;
+    const body = this.helpBody();
+    if (!box || !body || !this.helpData) return;
     box.hidden = false;
+    if (this.canHint) box.open = true;
     const phrases = this.canHint && this.scene.phrases?.length
-      ? `<div class="chips small">${this.scene.phrases.map(([en]) => `<button class="chip" data-say="${esc(en)}">${esc(en)}</button>`).join('')}</div>` : '';
-    box.innerHTML = `
+      ? `<div class="chips">${this.scene.phrases.map(([en]) => `<button class="chip" data-say="${esc(en)}">${esc(en)}</button>`).join('')}</div>` : '';
+    body.innerHTML = `
       ${this.canHint ? `<p class="ja-line">${esc(this.helpData.ja)}</p>` : ''}
-      <p class="help-title">こう返せます（タップで聞く）</p>
-      <ol class="replies">${this.helpData.replies.slice(0, 3).map((r, i) => `
-        <li><button data-reply="${i}">${icon('play')}<span>${esc(r.en)}<small>${esc(r.ja)}</small></span></button></li>`).join('')}</ol>
+      <ul class="replies">${(this.helpData.replies || []).slice(0, 3).map((r, i) => `
+        <li><button data-reply="${i}">${icon('play')}<span>${esc(r.en)}</span><small>${esc(r.ja)}</small></button></li>`).join('')}</ul>
       ${phrases}`;
+    this.toBottom();
   }
 
-  // 波形：AIが話す時は出力音量、自分が話す時はマイク音量
+  // 音量メーター：AIが話す時は出力音量、録音中はマイク音量
   draw() {
-    const cv = this.root.querySelector('.wave');
-    if (!cv) return;
-    const g = cv.getContext('2d');
-    const css = getComputedStyle(this.root);
-    let phase = 0;
+    const bar = this.root.querySelector('.meter i');
+    const meter = this.root.querySelector('.meter');
+    if (!bar) return;
     let smooth = 0;
     const loop = () => {
       if (this.ended) return;
-      const lvl = this.mode === 'ai' ? engine.outputLevel() * 3 : this.micOn ? (this.micLevel || 0) * 6 : 0;
-      smooth += (Math.min(1, lvl) - smooth) * 0.25;
-      phase += 0.05;
-      g.clearRect(0, 0, 240, 240);
-      g.strokeStyle = this.mode === 'ai' ? css.getPropertyValue('--stamp') : css.getPropertyValue('--teal');
-      g.lineWidth = 3;
-      g.beginPath();
-      for (let a = 0; a <= Math.PI * 2 + 0.01; a += Math.PI / 48) {
-        const r = 78 + smooth * 30 * (0.6 + 0.4 * Math.sin(a * 6 + phase * 4));
-        const x = 120 + r * Math.cos(a);
-        const y = 120 + r * Math.sin(a);
-        a === 0 ? g.moveTo(x, y) : g.lineTo(x, y);
-      }
-      g.stroke();
+      const ai = this.mode === 'ai';
+      const lvl = ai ? engine.outputLevel() * 4 : this.micOn ? (this.micLevel || 0) * 8 : 0;
+      smooth += (Math.min(1, lvl) - smooth) * 0.3;
+      bar.style.width = `${Math.round(smooth * 100)}%`;
+      meter.classList.toggle('ai', ai);
+      meter.classList.toggle('active', ai || (this.micOn && this.mode !== 'muted'));
       this.raf = requestAnimationFrame(loop);
     };
     loop();

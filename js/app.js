@@ -4,7 +4,7 @@ import { stageOf } from './prompts.js';
 import { apiKey, exportAll, importAll, wipeAll } from './store.js';
 import { listModels, liveModels, textModels } from './gemini.js';
 import { speak } from './audio.js';
-import { startTalk, abortTalk, isTalking, scoreSession } from './talk.js';
+import { startTalk, abortTalk, isTalking, scoreSession, micTest } from './talk.js';
 import {
   state, loadState, saveSettings, saveProgress, streak, testStatus, recordTest, retentionScene, recordRetention,
   dueCards, reviewCard, bestOf, shouldShowUpgrade, markUpgradeShown, usageOf, monthUsage, practiceOf,
@@ -236,12 +236,18 @@ function prep(id) {
     ${stage === 'free' && !isTest ? '<p class="fine">台本も日本語もありません。相手は状況に合わせて自由に話します。予想外の質問にも落ち着いて答えましょう。</p>' : ''}
     <ul class="tips">
       <li>イヤホンを使うと聞き取りが安定し、AIが自分の声を拾いにくくなります。</li>
-      <li>${ptt ? 'マイクボタンを<strong>タップして話し始め、話し終わったらもう一度タップ</strong>で送ります（長押しして離しても送れます）。' : '話し終わると自動で送ります。考え中の沈黙が長いと途中で送られることがあります。'}</li>
-      <li>AIが話している途中でも、話し始めればAIは止まります。</li>
+      <li>${ptt ? '<strong>「話す」</strong>を押してから英語で話し、話し終わったら<strong>「送る」</strong>を押します。' : '話し終わると自動で送ります。考え中の沈黙が長いと途中で送られることがあります。'}</li>
+      <li>AIが話している途中でも、${ptt ? '「話す」を押せば' : '話し始めれば'}AIは止まります。</li>
     </ul>
+    <div class="mic-test">
+      <button class="outline" data-act="mic-test">${icon('mic')}<span>マイクをテストする</span></button>
+      <div class="meter" aria-hidden="true"><i></i></div>
+      <p class="diag fine">声を出して、バーが動けばマイクは使えます。</p>
+    </div>
     <button class="wide" data-act="start">${icon('mic')}会話を始める</button>
     <p class="fine center">開始するとマイクの使用許可を求められます。録音は保存せず、文字起こしだけを端末に残します。</p>
   </section>`;
+  app.querySelector('[data-act=mic-test]').onclick = () => micTest(app.querySelector('.mic-test'));
   app.querySelector('[data-act=start]').onclick = async (e) => {
     e.target.disabled = true;
     if (state.settings.mode === 'free' && usageOf().sessions >= FREE_DAILY_GUIDE * 2 && shouldShowUpgrade('rate')) upgradeSheet('rate');

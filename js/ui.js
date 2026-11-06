@@ -7,6 +7,7 @@ const ICONS = {
   slow: '<path d="M4 17h16M7 13c0-3 2.2-5 5-5s5 2 5 5"/><circle cx="17.5" cy="13" r="1"/>',
   back: '<path d="M15 5l-7 7 7 7"/>',
   gear: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',
+  send: '<path d="M4 12l16-8-6 16-3-7-7-1Z"/>',
   lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
 };
 

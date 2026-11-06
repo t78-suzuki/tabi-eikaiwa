@@ -1,4 +1,8 @@
 // マイク入力とAI音声の再生（iPhone Safari 対応のため AudioContext は1つだけ使う）
+//
+// iPhone Safari の注意点
+// - AudioContext はタップの処理の中で、await より前に作る・再開する（unlock）。後からだと止まったままになる
+// - AudioWorklet が動かない端末があるため、動かなければ ScriptProcessor に切り替える
 
 export function bufToB64(buf) {
   const u = new Uint8Array(buf);
@@ -19,58 +23,156 @@ function b64ToFloat(b64) {
   return out;
 }
 
+// 任意のサンプルレートの音を 16kHz・16bit PCM に変換し、640サンプル（40ms）ずつ渡す
+// capture-worklet.js と同じ処理（ワークレットからは import できないため複製している）
+function makeDownsampler(rate, emit) {
+  const ratio = rate / 16000;
+  const out = new Int16Array(640);
+  let n = 0, pos = 0, acc = 0, accN = 0, sum = 0;
+  return (ch) => {
+    for (let i = 0; i < ch.length; i++) {
+      acc += ch[i];
+      accN++;
+      pos += 1;
+      if (pos >= ratio) {
+        pos -= ratio;
+        const s = Math.max(-1, Math.min(1, acc / accN));
+        acc = 0;
+        accN = 0;
+        out[n++] = s < 0 ? s * 0x8000 : s * 0x7fff;
+        sum += s * s;
+        if (n === out.length) {
+          emit(out.buffer.slice(0), Math.sqrt(sum / n));
+          n = 0;
+          sum = 0;
+        }
+      }
+    }
+  };
+}
+
+const MIC = { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } };
+
 export class AudioEngine {
-  // ユーザー操作（タップ）の中で呼ぶこと
-  // iPhone Safari では AudioContext より先にマイクを開かないと、マイクの音が無音になることがある
+  // タップの処理の中で、最初の await より前に必ず呼ぶ
+  unlock() {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!this.ctx || this.ctx.state === 'closed') {
+      this.ctx = new AC();
+      this.out = this.ctx.createGain();
+      this.analyser = this.ctx.createAnalyser();
+      this.analyser.fftSize = 256;
+      this.out.connect(this.analyser).connect(this.ctx.destination);
+      this.sources = new Set();
+      this.nextTime = 0;
+      this.levelBuf = new Uint8Array(this.analyser.fftSize);
+      this.workletReady = null;
+    }
+    if (this.ctx.state !== 'running') this.ctx.resume().catch(() => {});
+    // 無音を一瞬鳴らして、iPhone の音声出力を有効にする
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.ctx.createBuffer(1, 1, this.ctx.sampleRate);
+    src.connect(this.ctx.destination);
+    src.start(0);
+  }
+
+  // unlock() の直後に呼ぶ。マイクを開く
   async init() {
     if (!this.stream || this.stream.getAudioTracks().every((t) => t.readyState === 'ended')) {
-      this.stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
-      });
+      this.stream = await navigator.mediaDevices.getUserMedia(MIC);
     }
-    if (this.ctx) return this.resume();
-    const AC = window.AudioContext || window.webkitAudioContext;
-    this.ctx = new AC();
-    // 電話の着信などで止まったら、次の操作で再開できるようにしておく
-    this.ctx.onstatechange = () => this.onState?.(this.ctx.state);
-    await this.ctx.audioWorklet.addModule(new URL('./capture-worklet.js', import.meta.url));
-    this.out = this.ctx.createGain();
-    this.analyser = this.ctx.createAnalyser();
-    this.analyser.fftSize = 256;
-    this.out.connect(this.analyser).connect(this.ctx.destination);
-    this.sources = new Set();
-    this.nextTime = 0;
-    this.levelBuf = new Uint8Array(this.analyser.fftSize);
     await this.resume();
   }
 
   async resume() {
-    if (this.ctx.state !== 'running') await this.ctx.resume();
+    if (this.ctx && this.ctx.state !== 'running') {
+      try { await this.ctx.resume(); } catch { /* 次のタップで再開する */ }
+    }
   }
 
-  // init() で開いたマイクを、16kHz に変換するワークレットにつなぐ
+  // マイクの音を 16kHz に変換して onChunk(base64) に渡す。音量は onLevel(0〜1)
   async startMic(onChunk, onLevel) {
+    this.stopCapture();
+    this.onChunk = onChunk;
+    this.onLevel = onLevel;
+    this.ticks = 0;
     this.src = this.ctx.createMediaStreamSource(this.stream);
-    this.node = new AudioWorkletNode(this.ctx, 'capture', { processorOptions: { targetRate: 16000 } });
-    this.node.port.onmessage = (e) => {
-      if (e.data.pcm) onChunk(bufToB64(e.data.pcm));
-      onLevel?.(e.data.level);
-    };
-    const mute = this.ctx.createGain();
-    mute.gain.value = 0;
-    this.src.connect(this.node).connect(mute).connect(this.ctx.destination);
+    this.mute = this.ctx.createGain();
+    this.mute.gain.value = 0;
+    this.mute.connect(this.ctx.destination);
+    let worklet = false;
+    if (this.ctx.audioWorklet && !this.forceScript) {
+      try {
+        this.workletReady ||= this.ctx.audioWorklet.addModule(new URL('./capture-worklet.js', import.meta.url));
+        await this.workletReady;
+        this.node = new AudioWorkletNode(this.ctx, 'capture', { processorOptions: { targetRate: 16000 } });
+        this.node.port.onmessage = (e) => this.receive(e.data.pcm, e.data.level);
+        this.node.port.postMessage({ enabled: true });
+        this.src.connect(this.node).connect(this.mute);
+        worklet = true;
+      } catch {
+        this.workletReady = null;
+      }
+    }
+    if (!worklet) this.startScript();
+    this.mode = worklet ? 'worklet' : 'script';
     await this.resume();
+    // ワークレットが1.5秒たっても動かなければ ScriptProcessor に切り替える
+    if (worklet) {
+      clearTimeout(this.fallbackTimer);
+      this.fallbackTimer = setTimeout(() => {
+        if (this.ticks === 0 && this.node) {
+          this.forceScript = true;
+          this.node.disconnect();
+          this.node = null;
+          this.startScript();
+          this.mode = 'script';
+        }
+      }, 1500);
+    }
+  }
+
+  startScript() {
+    this.proc = this.ctx.createScriptProcessor(4096, 1, 1);
+    const down = makeDownsampler(this.ctx.sampleRate, (pcm, level) => this.receive(pcm, level));
+    this.proc.onaudioprocess = (e) => down(e.inputBuffer.getChannelData(0));
+    this.src.connect(this.proc).connect(this.mute);
+  }
+
+  receive(pcm, level) {
+    this.ticks++;
+    this.onLevel?.(level);
+    if (pcm && this.enabled) this.onChunk?.(bufToB64(pcm));
   }
 
   setMicEnabled(on) {
-    this.node?.port.postMessage({ enabled: on });
+    this.enabled = on;
+  }
+
+  stopCapture() {
+    clearTimeout(this.fallbackTimer);
+    for (const n of [this.src, this.node, this.proc, this.mute]) { try { n?.disconnect(); } catch { /* 切断済み */ } }
+    if (this.proc) this.proc.onaudioprocess = null;
+    this.src = this.node = this.proc = this.mute = null;
+    this.enabled = false;
   }
 
   stopMic() {
+    this.stopCapture();
     this.stream?.getTracks().forEach((t) => t.stop());
-    this.src?.disconnect();
-    this.node?.disconnect();
-    this.stream = this.src = this.node = null;
+    this.stream = null;
+  }
+
+  // 画面に出す診断情報（不具合の報告用）
+  diag() {
+    const t = this.stream?.getAudioTracks()[0];
+    const rate = t?.getSettings?.().sampleRate;
+    return [
+      `音声:${this.ctx?.state || 'なし'}${this.ctx ? ` ${this.ctx.sampleRate}Hz` : ''}`,
+      `マイク:${t ? t.readyState + (t.muted ? '・ミュート' : '') : 'なし'}${rate ? ` ${rate}Hz` : ''}`,
+      `方式:${this.mode || '-'}`,
+      `受信:${this.ticks || 0}`,
+    ].join('／');
   }
 
   playPcm(b64, rate = 24000) {
