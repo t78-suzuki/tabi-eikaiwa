@@ -21,10 +21,18 @@ function b64ToFloat(b64) {
 
 export class AudioEngine {
   // ユーザー操作（タップ）の中で呼ぶこと
+  // iPhone Safari では AudioContext より先にマイクを開かないと、マイクの音が無音になることがある
   async init() {
+    if (!this.stream || this.stream.getAudioTracks().every((t) => t.readyState === 'ended')) {
+      this.stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
+      });
+    }
     if (this.ctx) return this.resume();
     const AC = window.AudioContext || window.webkitAudioContext;
     this.ctx = new AC();
+    // 電話の着信などで止まったら、次の操作で再開できるようにしておく
+    this.ctx.onstatechange = () => this.onState?.(this.ctx.state);
     await this.ctx.audioWorklet.addModule(new URL('./capture-worklet.js', import.meta.url));
     this.out = this.ctx.createGain();
     this.analyser = this.ctx.createAnalyser();
@@ -40,10 +48,8 @@ export class AudioEngine {
     if (this.ctx.state !== 'running') await this.ctx.resume();
   }
 
+  // init() で開いたマイクを、16kHz に変換するワークレットにつなぐ
   async startMic(onChunk, onLevel) {
-    this.stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
-    });
     this.src = this.ctx.createMediaStreamSource(this.stream);
     this.node = new AudioWorkletNode(this.ctx, 'capture', { processorOptions: { targetRate: 16000 } });
     this.node.port.onmessage = (e) => {
@@ -53,6 +59,7 @@ export class AudioEngine {
     const mute = this.ctx.createGain();
     mute.gain.value = 0;
     this.src.connect(this.node).connect(mute).connect(this.ctx.destination);
+    await this.resume();
   }
 
   setMicEnabled(on) {

@@ -31,8 +31,9 @@ export async function startTalk(root, ctx) {
   }
   try {
     await engine.init();
-  } catch {
-    toast('音声の準備に失敗しました。ブラウザを最新にしてお試しください。');
+  } catch (e) {
+    toast(e.name === 'NotAllowedError' ? 'マイクの使用が許可されていません。設定 → Safari → マイク で許可してください。'
+      : e.name === 'NotFoundError' ? 'マイクが見つかりません。' : '音声の準備に失敗しました。ブラウザを最新にしてお試しください。');
     return false;
   }
   active = new Talk(root, ctx);
@@ -84,9 +85,9 @@ class Talk {
       systemText: liveSystemPrompt({ scene: this.scene, stage: this.stage, speed: this.speed, isTest: this.isTest, dueCards: this.due }),
       getHistory: () => this.transcript.map((t) => ({ role: t.who === 'ai' ? 'model' : 'user', parts: [{ text: t.text }] })),
       handlers: {
-        onAudio: (b64, rate) => { if (!this.ended) engine.playPcm(b64, rate); this.setStatus('ai'); },
+        onAudio: (b64, rate) => { clearTimeout(this.replyWait); if (!this.ended) engine.playPcm(b64, rate); this.setStatus('ai'); },
         onInputText: (t) => this.addText('me', t),
-        onOutputText: (t) => this.addText('ai', t),
+        onOutputText: (t) => { clearTimeout(this.replyWait); this.addText('ai', t); },
         onTurnComplete: () => this.aiTurnDone(),
         onInterrupted: () => engine.stopPlayback(),
         onReconnecting: () => this.banner('接続が切れたため、再接続しています…'),
@@ -101,7 +102,10 @@ class Talk {
     };
     this.setStatus('connect');
     await this.live.connect();
-    await engine.startMic((b64) => { if (this.micOn) this.live.sendAudio(b64); }, (lv) => { this.micLevel = lv; });
+    await engine.startMic((b64) => { if (this.micOn) this.live.sendAudio(b64); }, (lv) => {
+      this.micLevel = lv;
+      if (this.micOn) this.micPeak = Math.max(this.micPeak || 0, lv);
+    });
     engine.setMicEnabled(this.micOn);
     this.started = performance.now();
     this.live.sendControl(CONTROL.start);
@@ -181,31 +185,68 @@ class Talk {
   }
 
   // ---- 操作 ----
-  async press(on) {
+  // 押して話すモード：タップで話し始め、もう一度タップで送る。長押しして離しても送れる
+  async micDown() {
     if (this.ended) return;
-    if (this.pushToTalk) {
-      if (on === this.pressing) return;
-      this.pressing = on;
-      if (on) {
-        engine.stopPlayback();
-        this.pressAt = performance.now();
-        this.live.activityStart();
-        this.micOn = true;
-        engine.setMicEnabled(true);
-        this.setStatus('me');
-      } else {
-        // 話し終わりの音を取りこぼさないよう少し待ってから閉じる
-        await new Promise((r) => setTimeout(r, 250));
-        this.micOn = false;
-        engine.setMicEnabled(false);
-        this.live.activityEnd();
-        this.setStatus('think');
-      }
-    } else if (on) {
+    engine.resume();
+    if (!this.pushToTalk) {
       this.micOn = !this.micOn;
       engine.setMicEnabled(this.micOn);
       this.setStatus(this.micOn ? 'wait' : 'muted');
+      return;
     }
+    if (this.pressing) { this.downAt = 0; return this.stopTalking(); }
+    this.downAt = performance.now();
+    this.startTalking();
+  }
+
+  micUp() {
+    // 0.4秒以上の長押しなら、離したときに送る。短いタップなら話し続ける
+    if (this.pushToTalk && this.pressing && this.downAt && performance.now() - this.downAt > 400) this.stopTalking();
+  }
+
+  startTalking() {
+    clearTimeout(this.replyWait);
+    this.banner('');
+    this.pressing = true;
+    engine.stopPlayback();
+    this.pressAt = performance.now();
+    this.live.activityStart();
+    this.micOn = true;
+    engine.setMicEnabled(true);
+    this.setStatus('me');
+    this.watchMic();
+  }
+
+  async stopTalking() {
+    if (!this.pressing) return;
+    this.pressing = false;
+    clearTimeout(this.micWatch);
+    this.setStatus('think');
+    // 話し終わりの音を取りこぼさないよう少し待ってから閉じる
+    await new Promise((r) => setTimeout(r, 250));
+    this.micOn = false;
+    engine.setMicEnabled(false);
+    this.live.activityEnd();
+    this.banner('');
+    // 返事が来ないまま止まらないよう、8秒で話せる状態に戻す
+    clearTimeout(this.replyWait);
+    this.replyWait = setTimeout(() => {
+      if (this.ended || this.pressing || this.mode !== 'think') return;
+      this.setStatus('wait');
+      this.banner('うまく聞き取れなかったようです。もう一度マイクをタップして話してください。');
+    }, 8000);
+  }
+
+  // 話している間にマイクの音が届いていなければ知らせる
+  watchMic() {
+    this.micPeak = 0;
+    clearTimeout(this.micWatch);
+    this.micWatch = setTimeout(() => {
+      if (this.pressing && this.micPeak < 0.003) {
+        this.banner('マイクの音が届いていません。マイクの許可（設定 → Safari → マイク）と、消音・イヤホンの接続を確認してください。');
+      }
+    }, 2000);
   }
 
   slower() {
@@ -272,6 +313,8 @@ class Talk {
     this.ended = true;
     clearInterval(this.tick);
     clearTimeout(this.silenceTimer);
+    clearTimeout(this.micWatch);
+    clearTimeout(this.replyWait);
     cancelAnimationFrame(this.raf);
     this.live?.close();
     engine.close();
@@ -321,7 +364,7 @@ class Talk {
         ${this.stage !== 'free' && !this.isTest ? `<button class="side" data-act="slower">Slower,<br>please</button>` : '<span></span>'}
         <div class="mic-wrap">
           <canvas class="wave" width="240" height="240" aria-hidden="true"></canvas>
-          <button class="mic" data-act="mic" aria-label="${this.pushToTalk ? '押している間だけ話す' : 'マイクのオンオフ'}">${icon('mic')}</button>
+          <button class="mic" data-act="mic" aria-label="${this.pushToTalk ? 'タップで話し始め、もう一度タップで送る' : 'マイクのオンオフ'}">${icon('mic')}</button>
         </div>
         ${this.canHint ? `<button class="side" data-act="hint">ヒント</button>` : '<span></span>'}
       </footer>
@@ -333,11 +376,10 @@ class Talk {
     r.querySelector('[data-act=slower]')?.addEventListener('click', () => this.slower());
     r.querySelector('[data-act=hint]')?.addEventListener('click', () => this.hint());
     const mic = r.querySelector('[data-act=mic]');
-    if (this.pushToTalk) {
-      mic.addEventListener('pointerdown', (e) => { e.preventDefault(); mic.setPointerCapture?.(e.pointerId); this.press(true); });
-      for (const ev of ['pointerup', 'pointercancel']) mic.addEventListener(ev, () => this.press(false));
-      mic.addEventListener('contextmenu', (e) => e.preventDefault());
-    } else mic.addEventListener('click', () => this.press(true));
+    // iPhone では長押しで pointercancel が来ることがあるので、cancel では送らない
+    mic.addEventListener('pointerdown', (e) => { e.preventDefault(); this.micDown(); });
+    mic.addEventListener('pointerup', () => this.micUp());
+    mic.addEventListener('contextmenu', (e) => e.preventDefault());
     r.querySelector('.talk').addEventListener('click', (e) => {
       const say = e.target.closest('[data-say]');
       if (say) speak(say.dataset.say, { slow: this.scene.lv <= 3 });
@@ -352,8 +394,8 @@ class Talk {
     const t = {
       connect: '接続しています…',
       ai: `${this.scene.aiName} が話しています`,
-      wait: this.pushToTalk ? 'ボタンを押している間だけ話せます' : '話しかけてください（話し終わると自動で送ります）',
-      me: '聞いています… 指を離すと送ります',
+      wait: this.pushToTalk ? 'マイクをタップして話し、話し終わったらもう一度タップ' : '話しかけてください（話し終わると自動で送ります）',
+      me: '聞いています… 話し終わったらタップで送ります',
       think: '考えています…',
       muted: 'マイクはオフです。タップでオン',
     }[kind];
