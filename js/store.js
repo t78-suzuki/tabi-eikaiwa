@@ -106,6 +106,7 @@ function cleanSession(s) {
   out.testResult = s.testResult && typeof s.testResult === 'object'
     ? { passed: s.testResult.passed === true, newLevel: int(s.testResult.newLevel, 2, 10, null) } : undefined;
   out.goalAchieved = s.goalAchieved === true;
+  out.demo = s.demo === true;
   out.cardIds = ids(s.cardIds);
   out.dueIds = ids(s.dueIds);
   return out;

@@ -103,7 +103,7 @@ export class AudioEngine {
     let worklet = false;
     if (this.ctx.audioWorklet && !this.forceScript) {
       try {
-        this.workletReady ||= this.ctx.audioWorklet.addModule(new URL('./capture-worklet.js', import.meta.url));
+        this.workletReady ||= this.ctx.audioWorklet.addModule(new URL('./capture-worklet.js?v=4', import.meta.url));
         await this.workletReady;
         this.node = new AudioWorkletNode(this.ctx, 'capture', { processorOptions: { targetRate: 16000 } });
         this.node.port.onmessage = (e) => this.receive(e.data.pcm, e.data.level);

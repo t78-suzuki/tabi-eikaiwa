@@ -1,15 +1,15 @@
 // 会話画面：準備 → 会話 → 採点（仕様書 5章）
-import { levelOf } from './data.js';
-import { AudioEngine, speak } from './audio.js';
-import { LiveSession } from './live.js';
-import { generateJSON } from './gemini.js';
-import { liveSystemPrompt, helpPrompt, scorePrompt, HELP_SCHEMA, SCORE_SCHEMA, CONTROL } from './prompts.js';
-import { apiKey } from './store.js';
+import { levelOf } from './data.js?v=4';
+import { AudioEngine, speak } from './audio.js?v=4';
+import { LiveSession } from './live.js?v=4';
+import { generateJSON } from './gemini.js?v=4';
+import { liveSystemPrompt, helpPrompt, scorePrompt, HELP_SCHEMA, SCORE_SCHEMA, CONTROL } from './prompts.js?v=4';
+import { apiKey } from './store.js?v=4';
 import {
   state, localScores, totalOf, saveSession, addCard, reviewCard, dueCards, addUsage, noteRateError,
   FREE_SESSION_MIN, monthUsage,
-} from './progress.js';
-import { esc, icon, toast } from './ui.js';
+} from './progress.js?v=4';
+import { esc, icon, toast } from './ui.js?v=4';
 
 const engine = new AudioEngine();
 let active = null;
@@ -381,6 +381,7 @@ ${engine.diag()}`);
       id: `s${Date.now().toString(36)}`,
       sceneId: this.scene.id, lv: this.scene.lv, at: Date.now(), durationSec,
       stage: this.stage, noSupport: !!this.noSupport, isTest: !!this.isTest, retention: !!this.retention,
+      demo: state.settings.demo === true,
       transcript, helps: this.helps, userTurns: this.userTurns, scores: null, dueIds: this.due.map((c) => c.id),
     };
     await scoreSession(session, this.scene, this.due);

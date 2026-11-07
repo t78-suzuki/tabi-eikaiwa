@@ -1,17 +1,18 @@
 // 画面（ホーム・レベルマップ・場面選択・準備・会話・振り返り・復習・成長記録・設定）
-import { LEVELS, SCENES, TESTS, STAGE_LABEL, VOICES, levelOf, scenesOf, findScene } from './data.js';
-import { stageOf } from './prompts.js';
-import { apiKey, exportAll, importAll, wipeAll } from './store.js';
-import { listModels, liveModels, textModels } from './gemini.js';
-import { speak } from './audio.js';
-import { startTalk, abortTalk, isTalking, scoreSession, micTest } from './talk.js';
+import { LEVELS, SCENES, TESTS, STAGE_LABEL, VOICES, levelOf, scenesOf, findScene } from './data.js?v=4';
+import { stageOf } from './prompts.js?v=4';
+import { apiKey, exportAll, importAll, wipeAll } from './store.js?v=4';
+import { listModels, liveModels, textModels } from './gemini.js?v=4';
+import { speak } from './audio.js?v=4';
+import { startTalk, abortTalk, isTalking, scoreSession, micTest } from './talk.js?v=4';
 import {
   state, loadState, saveSettings, saveProgress, streak, testStatus, recordTest, retentionScene, recordRetention,
   dueCards, reviewCard, bestOf, shouldShowUpgrade, markUpgradeShown, usageOf, monthUsage, practiceOf,
+  isDemo, unlockedLv, currentLv,
   UNLOCK_AVG, PASS_SCORE, SRS_DAYS, FREE_SESSION_MIN, addCard,
-} from './progress.js';
-import { put, remove } from './store.js';
-import { esc, icon, toast, modal, fmtDate, head } from './ui.js';
+} from './progress.js?v=4';
+import { put, remove } from './store.js?v=4';
+import { esc, icon, toast, modal, fmtDate, head } from './ui.js?v=4';
 
 const app = document.getElementById('app');
 const FREE_DAILY_GUIDE = 10; // 無料枠で上限に達しにくい1日の会話回数の目安（試作で計測して調整）
@@ -57,15 +58,16 @@ function render() {
 // ---------------- ホーム ----------------
 function home() {
   const p = state.progress;
-  const L = levelOf(p.current);
+  const cur = currentLv();
+  const L = levelOf(cur);
   const due = dueCards().length;
   const ret = retentionScene();
-  const rec = recommendNew(p.current);
+  const rec = recommendNew(cur);
   const review = ret ? { scene: ret, label: '定着チェック', note: '前のレベルの力が残っているか確認します' }
     : p.needsReview.length ? { scene: findScene(p.needsReview[0]), label: '要復習の場面', note: '前回60点未満でした' }
       : null;
   const t = usageOf();
-  const st = testStatus(p.current);
+  const st = testStatus(cur);
   app.innerHTML = `
   <section class="home">
     <header class="home-head">
@@ -76,6 +78,7 @@ function home() {
       </div>
       <a class="icon-btn" href="#/settings" aria-label="設定">${icon('gear')}</a>
     </header>
+    ${isDemo() ? `<a class="notice" href="#/settings">デモモード中：各レベルを1回体験すると次のレベルとテストが開きます。本番の成績には入りません。</a>` : ''}
     <div class="streak"><strong>${streak()}</strong>日連続<span>今日 ${t.sessions}回・${Math.round(t.liveSec / 60)}分</span></div>
 
     <h2>今日のおすすめ</h2>
@@ -98,11 +101,11 @@ function home() {
       <span class="t-goal">前の会話で指摘された言い方をもう一度</span>
     </a>` : ''}
 
-    ${st.unlocked && !st.passed ? `<a class="notice" href="#/level/${p.current}">昇格テストを受けられます。Lv${p.current} の場面一覧から挑戦できます。</a>` : ''}
+    ${st.unlocked && !st.passed ? `<a class="notice" href="#/level/${cur}">昇格テストを受けられます。Lv${cur} の場面一覧から挑戦できます。</a>` : ''}
 
     <nav class="tiles">
       <a href="#/map"><strong>レベルマップ</strong><span>Lv1〜10</span></a>
-      <a href="#/level/${p.current}"><strong>場面を選ぶ</strong><span>Lv${p.current}</span></a>
+      <a href="#/level/${cur}"><strong>場面を選ぶ</strong><span>Lv${cur}</span></a>
       <a href="#/review"><strong>復習</strong><span>${due}枚</span></a>
       <a href="#/growth"><strong>成長記録</strong><span>${state.sessions.length}回</span></a>
     </nav>
@@ -130,7 +133,7 @@ function map() {
     <p class="lead">昇格テストに合格すると、スタンプが押されます。解放済みのレベルはいつでも練習できます。</p>
     <ol class="stamps">
       ${LEVELS.map((L) => {
-        const open = L.lv <= p.unlocked;
+        const open = L.lv <= unlockedLv();
         const st = testStatus(L.lv);
         const t = p.tests[L.lv];
         const cls = st.passed ? 'passed' : open ? 'open' : 'locked';
@@ -140,7 +143,7 @@ function map() {
             <span class="stamp" style="--tilt:${tilt}deg">
               <span class="s-lv">Lv${L.lv}</span>
               <span class="s-title">${esc(L.title)}</span>
-              <span class="s-date">${st.passed ? fmtDate(t.passedAt) : open ? (st.unlocked ? 'テスト可' : `練習 ${st.count}/5`) : L.cefr}</span>
+              <span class="s-date">${st.passed ? fmtDate(t.passedAt) : open ? (st.unlocked ? 'テスト可' : st.demo ? '未体験' : `練習 ${st.count}/5`) : L.cefr}</span>
             </span>
             <span class="slot-can">${open ? '' : icon('lock')}${esc(L.can)}</span>
           </a>
@@ -154,12 +157,14 @@ function map() {
 function level(lvStr) {
   const lv = Number(lvStr);
   const L = levelOf(lv);
-  if (!L || lv > state.progress.unlocked) { location.replace('#/map'); return; }
+  if (!L || lv > unlockedLv()) { location.replace('#/map'); return; }
   const st = testStatus(lv);
   const ns = query().ns === '1';
   const scenes = scenesOf(lv);
   const testLabel = st.passed ? `合格済み（${st.lastTestScore}点）。もう一度受けることもできます。`
     : st.waitUntil ? `前回 ${st.lastTestScore}点。${new Date(st.waitUntil).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })} から再受験できます。`
+      : st.demo ? (st.unlocked ? `デモモード：体験済みなので受験できます（結果は本番の成績に入りません）。合格基準は ${PASS_SCORE}点です。`
+        : 'デモモード：このレベルの場面を1回体験すると、テストと次のレベルが開きます。')
       : st.unlocked ? `受験できます。初見の場面・ヒントなし・1回限りで ${PASS_SCORE}点以上なら合格です。`
         : `直近5回の平均 ${UNLOCK_AVG}点以上・目的達成4回以上で解放（いま ${st.count}回・平均${st.avg}点・達成${st.goals}回）`;
   app.innerHTML = `
@@ -207,7 +212,7 @@ function fullTripScene() {
 function prep(id) {
   const q = query();
   const scene = id === 'full-trip' ? fullTripScene() : findScene(id);
-  if (!scene || scene.lv > state.progress.unlocked) { location.replace('#/'); return; }
+  if (!scene || scene.lv > unlockedLv()) { location.replace('#/'); return; }
   const isTest = q.test === '1';
   const retention = q.retention === '1';
   const noSupport = q.ns === '1';
@@ -326,7 +331,7 @@ function result(id) {
       <div class="big"><strong>${Number(s.testAvg ?? sc.total)}</strong><span>${s.testAvg != null ? '3部の平均点' : '/ 100点'}</span></div>
       <span class="verdict ${s.goalAchieved || tr?.passed ? 'ok' : 'ng'}">${verdict}<small>${fmtDate(s.at)}</small></span>
     </div>
-    ${tr ? `<p class="notice ${tr.passed ? 'ok' : ''}">${tr.passed ? (tr.newLevel ? `Lv${Number(tr.newLevel)} が解放されました。` : s.lv === 10 ? '卒業試験に合格しました。一人旅に出られる力がついています。' : '合格しました。') : `合格まであと少しです。弱かった観点は「${esc(weak)}」。24時間後に再受験できます。`}</p>` : ''}
+    ${tr ? `<p class="notice ${tr.passed ? 'ok' : ''}">${tr.passed ? (tr.newLevel ? `Lv${Number(tr.newLevel)} が解放されました。` : s.lv === 10 ? '卒業試験に合格しました。一人旅に出られる力がついています。' : '合格しました。') : `合格まであと少しです。弱かった観点は「${esc(weak)}」。${s.demo ? '' : '24時間後に再受験できます。'}`}${s.demo ? '（デモモードのため本番の成績には入りません）' : ''}</p>` : ''}
     <ul class="axes">${axes.map(([n, v, m]) => `<li><span>${n}</span><meter min="0" max="${m}" value="${Number(v)}"></meter><b>${Number(v)}<small>/${m}</small></b></li>`).join('')}</ul>
     <p class="summary">${esc(s.summaryJa)}</p>
     <p class="next"><span>次回の課題</span>${esc(s.nextTaskJa)}</p>
@@ -594,6 +599,10 @@ function settings() {
         <label class="check"><input type="checkbox" name="detailedScoring" ${s.detailedScoring ? 'checked' : ''}><span>詳しい採点（上位モデル・発音のヒントつき）</span></label>`
         : `<button type="button" class="outline wide" data-act="upgrade">有料枠でできること</button>`}
 
+      <h2>デモモード</h2>
+      <label class="check"><input type="checkbox" name="demo" ${s.demo === true ? 'checked' : ''}><span>デモモード（各レベルを1回体験すれば、合格基準に関係なく次のレベルと昇格テストが開く）</span></label>
+      <p class="fine">デモ中の会話とテスト結果は本番のレベルアップ判定に入りません。オフにすると、これまでの成績どおりのレベル（いまは Lv${Number(state.progress.current)}）に戻って再開します。</p>
+
       <h2>モデル</h2>
       <label>会話モデル<select name="liveModel">${opt((s.availableLive || [s.liveModel]).map((m) => [m, m]), s.liveModel)}</select></label>
       <label>採点モデル<select name="textModel">${opt((s.availableText || [s.textModel]).map((m) => [m, m]), s.textModel)}</select></label>
@@ -626,6 +635,10 @@ function settings() {
   form.addEventListener('change', async (e) => {
     const el = e.target;
     if (el.name === 'detailedScoring') s.detailedScoring = el.checked;
+    else if (el.name === 'demo') {
+      s.demo = el.checked;
+      toast(el.checked ? 'デモモードにしました' : `本番モードに戻りました。Lv${Number(state.progress.current)} から再開します`);
+    }
     else if (el.name === 'monthlyCapMin') s.monthlyCapMin = Math.max(10, Number(el.value) || 300);
     else if (el.name) s[el.name] = el.value;
     await saveSettings();

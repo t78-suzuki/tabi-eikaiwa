@@ -1,5 +1,5 @@
 // Gemini に渡す指示文（会話用・ヒント用・採点用）
-import { levelOf } from './data.js';
+import { levelOf } from './data.js?v=4';
 
 const SPEED = [
   'Speak very slowly and clearly, with short pauses between phrases. Use only very simple words and 3-6 word sentences.',

@@ -1,9 +1,9 @@
 // アプリ本体だけをキャッシュする（ネットワーク優先。Gemini への通信は扱わない）
-const CACHE = 'eikaiwa-v3';
+const CACHE = 'eikaiwa-v4';
 const SHELL = [
-  './', 'index.html', 'css/app.css?v=3', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-180.png',
-  'js/app.js?v=3', 'js/talk.js', 'js/live.js', 'js/audio.js', 'js/capture-worklet.js', 'js/gemini.js',
-  'js/prompts.js', 'js/progress.js', 'js/store.js', 'js/data.js', 'js/ui.js',
+  './', 'index.html', 'css/app.css?v=4', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-180.png',
+  'js/app.js?v=4', 'js/talk.js?v=4', 'js/live.js?v=4', 'js/audio.js?v=4', 'js/capture-worklet.js?v=4', 'js/gemini.js?v=4',
+  'js/prompts.js?v=4', 'js/progress.js?v=4', 'js/store.js?v=4', 'js/data.js?v=4', 'js/ui.js?v=4',
 ];
 
 self.addEventListener('install', (e) => {

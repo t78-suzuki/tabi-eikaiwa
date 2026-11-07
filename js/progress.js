@@ -1,6 +1,6 @@
 // 評価・レベルアップ判定・復習（間隔反復）・利用量（仕様書 6章・8.1）
-import { kvGet, kvSet, getAll, put } from './store.js';
-import { LEVELS, SCENES, levelOf } from './data.js';
+import { kvGet, kvSet, getAll, put } from './store.js?v=4';
+import { LEVELS, SCENES, levelOf } from './data.js?v=4';
 
 const DAY = 86400000;
 export const SRS_DAYS = [1, 3, 7, 14];
@@ -101,9 +101,27 @@ export function totalOf(s) {
   return s.goal + s.clarity + s.grammar + s.fluency + s.independence;
 }
 
+// ---- デモモード（設定でオン）----
+// 各レベルで場面を1回体験すると、そのレベルの昇格テストと次のレベルが開く。
+// 本番の成績（progress.unlocked / current / tests）は書き換えないので、オフにすると本番のレベルに戻る。
+export const isDemo = () => state.settings.demo === true;
+
+const triedLv = (lv) => state.sessions.some((s) => s.lv === lv && !s.isTest);
+
+function demoReach() {
+  let n = 1;
+  while (n < LEVELS.length && triedLv(n)) n++;
+  return n;
+}
+
+// 画面で使う「開いているレベル」と「いまのレベル」
+export const unlockedLv = () => (isDemo() ? Math.max(state.progress.unlocked, demoReach()) : state.progress.unlocked);
+export const currentLv = () => (isDemo() ? unlockedLv() : state.progress.current);
+
 // ---- レベルアップ判定（6.2）----
+// デモモードでした会話は、本番のレベルアップ判定に数えない
 export function practiceOf(lv) {
-  return state.sessions.filter((s) => s.lv === lv && !s.isTest && !s.retention);
+  return state.sessions.filter((s) => s.lv === lv && !s.isTest && !s.retention && !s.demo);
 }
 
 export function testStatus(lv) {
@@ -112,19 +130,23 @@ export function testStatus(lv) {
   const goals = recent.filter((s) => s.goalAchieved).length;
   const t = state.progress.tests[lv] || {};
   const waitUntil = t.lastFailAt ? t.lastFailAt + DAY : 0;
+  const demo = isDemo();
   return {
     count: recent.length,
     avg,
     goals,
     passed: !!t.passedAt,
-    unlocked: recent.length >= 5 && avg >= UNLOCK_AVG && goals >= 4,
-    waitUntil: waitUntil > Date.now() ? waitUntil : 0,
+    unlocked: demo ? triedLv(lv) : recent.length >= 5 && avg >= UNLOCK_AVG && goals >= 4,
+    waitUntil: !demo && waitUntil > Date.now() ? waitUntil : 0,
     lastTestScore: t.lastScore,
+    demo,
   };
 }
 
 // 昇格テストの結果を記録。戻り値 { passed, newLevel }
+// デモモードでは合否だけ返し、本番の記録は変えない
 export async function recordTest(lv, score) {
+  if (isDemo()) return { passed: score >= PASS_SCORE, newLevel: null };
   const t = { ...(state.progress.tests[lv] || {}) };
   t.lastScore = score;
   const passed = score >= PASS_SCORE;
